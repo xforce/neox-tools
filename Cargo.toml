@@ -1,0 +1,17 @@
+[package]
+name = "npk"
+version = "0.1.0"
+authors = ["Alexander Guettler <alexander@guettler.io>"]
+edition = "2018"
+
+[dependencies]
+clap = "3.0.0-beta.1"
+byteorder = "1"
+log = "0.4"
+simple_logger = "1.6"
+compress = "0.2"
+lz4 = "1.23.1"
+lz4-sys = "1.9.2"
+fasthash = "0.4"
+tree_magic = "0.2"
+bytesize = "1.0.0"
