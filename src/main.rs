@@ -439,5 +439,7 @@ fn main() -> Result<(), Npk2Error> {
         _ => {}
     }
 
+    info!("Done.");
+
     Ok(())
 }
