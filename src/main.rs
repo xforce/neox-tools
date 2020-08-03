@@ -1,6 +1,6 @@
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
 use clap::{App, Arg};
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use std::io::{BufReader, Read, Seek};
 
 fn is_eof<T>(reader: &mut std::io::BufReader<T>) -> std::io::Result<bool>
@@ -86,12 +86,12 @@ impl NeoXIndex2 {
             let compressed_size = slice.read_u32::<LittleEndian>()?;
             let uncompressed_size = slice.read_u32::<LittleEndian>()?;
 
-            let field_14 = slice.read_u32::<LittleEndian>()?;
-            let field_18 = slice.read_u64::<LittleEndian>()?;
-            let field_20 = slice.read_i8()?;
-            let field_21 = slice.read_i8()?;
-            let field_22 = slice.read_i8()?;
-            let field_23 = slice.read_i8()?;
+            let _field_14 = slice.read_u32::<LittleEndian>()?;
+            let _field_18 = slice.read_u64::<LittleEndian>()?;
+            let _field_20 = slice.read_i8()?;
+            let _field_21 = slice.read_i8()?;
+            let _field_22 = slice.read_i8()?;
+            let _field_23 = slice.read_i8()?;
             let compress_type = slice.read_u16::<LittleEndian>()?;
             let encrypt_type = slice.read_u8()?;
             let field_27 = slice.read_u8()?;
@@ -148,19 +148,8 @@ impl NeoXIndex2 {
             NeoXIndex2CompressType::None => unencrypted_buffer,
             NeoXIndex2CompressType::LZ4 => {
                 let mut decompressed = Vec::new();
-                decompressed.resize(self.uncompressed_size as usize, 0xDD);
-                let dst_size = decompressed.len() as i32;
-                let src_size = unencrypted_buffer.len() as i32;
-
-                let len = unsafe {
-                    lz4_sys::LZ4_decompress_safe(
-                        unencrypted_buffer.as_ptr() as *const i8,
-                        decompressed.as_mut_ptr() as *mut i8,
-                        src_size,
-                        dst_size,
-                    )
-                };
-                if len < 0 {
+                let len = compress::lz4::decode_block(&unencrypted_buffer, &mut decompressed);
+                if len < 1 {
                     return Err(NeoXIndex2Error::DecompressFailedLZ4);
                 }
                 decompressed
@@ -198,7 +187,6 @@ impl From<NeoXIndex2Error> for Npk2Error {
 }
 
 struct Npk2Header {
-    magic: u32,
     file_count: u32,
     large_file_index_offset: u32,
     index_offset: u32,
@@ -271,7 +259,6 @@ impl Npk2Reader {
         //
         //
         Ok(Npk2Header {
-            magic,
             file_count,
             large_file_index_offset,
             index_offset,
@@ -340,19 +327,6 @@ impl Npk2Reader {
         let mut reader = BufReader::new(&self.file);
         Ok(index.read_content_from_buffer(&mut reader)?)
     }
-}
-
-pub enum NeoXFileType {}
-
-pub struct NeoXFile {
-    file_type: NeoXFileType,
-}
-
-fn as_u32_le(array: &[u8; 4]) -> u32 {
-    ((array[0] as u32) << 0)
-        + ((array[1] as u32) << 8)
-        + ((array[2] as u32) << 16)
-        + ((array[3] as u32) << 24)
 }
 
 fn main() -> Result<(), Npk2Error> {
@@ -446,7 +420,7 @@ fn main() -> Result<(), Npk2Error> {
                     "application/zip" => "zip",
                     "image/jpeg" => "jpg",
                     _ => {
-                        panic!("Unhandled mime type {}", result);
+                        error!("Unhandled mime type {}", result);
                         "dat"
                     }
                 };
