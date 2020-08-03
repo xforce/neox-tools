@@ -285,7 +285,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "npk"
+name = "npktool"
 version = "0.1.0"
 dependencies = [
  "byteorder",

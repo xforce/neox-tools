@@ -1,5 +1,5 @@
 [package]
-name = "npk"
+name = "npktool"
 version = "0.1.0"
 authors = ["Alexander Guettler <alexander@guettler.io>"]
 edition = "2018"

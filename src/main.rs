@@ -1,5 +1,3 @@
-#![feature(seek_convenience)]
-
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use clap::{App, Arg};
 use log::{debug, info, trace, warn};
