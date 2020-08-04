@@ -16,6 +16,7 @@ For each file in the NPK the tool will try to determine the mime type and add an
 * Simple Encryption Support
 * Zlib Support
 * Re-packing of NPK
+* Probably some refactoring and more 'tools' in the future
 
 ## Building
 
