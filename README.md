@@ -11,12 +11,22 @@ Support for Encrypted and ZLib files is planned and will follow soon...
 
 For each file in the NPK the tool will try to determine the mime type and add an appropriate file extension. This is on a best guess basis and the mapping is currently somewhat limited (but handles all files in Eve Echoes mostly correct)
 
+## Coming Soon
+* RC4 Encryption Support
+* Simple Encryption Support
+* Zlib Support
+* Re-packing of NPK
+
 ## Building
 
-All you have to do to build it is clone it an run.
+All you have to do to build it is clone it an run on of the following:
 
 ```
 cargo build --release
+```
+or to install
+```
+cargo install --path .
 ```
 
 ## Usage
