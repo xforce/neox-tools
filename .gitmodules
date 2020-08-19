@@ -1,0 +1,3 @@
+[submodule "tools/python-uncompyle6"]
+	path = tools/python-uncompyle6
+	url = git@github.com:xforce/python-uncompyle6.git
