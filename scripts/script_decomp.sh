@@ -8,9 +8,9 @@ for file in "script_nxs"/*.nxs
 do
     file="$(basename "$file")"
     echo $file
-    python2 tools/script_redirect.py script_nxs/$file > script/temp/$file.out
-    python2 tools/pyc_decryptor.py script/temp/$file.out script/pyc/$file.pyc
-    python3 tools/decompile_pyc.py -o script/out/$file.py script/pyc/$file.pyc 2> /dev/null
+    python2 scripts/script_redirect.py script_nxs/$file > script/temp/$file.out
+    python2 scripts/pyc_decryptor.py script/temp/$file.out script/pyc/$file.pyc
+    python3 scripts/decompile_pyc.py -o script/out/$file.py script/pyc/$file.pyc 2> /dev/null
     if [ $? -ne 0 ]
     then 
         echo "Failed...sad face"
