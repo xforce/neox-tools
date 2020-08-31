@@ -3,17 +3,22 @@
 mkdir -p script/temp
 mkdir -p script/pyc
 mkdir -p script/out
+mkdir -p script/failed
 
-for file in "script_nxs"/*.nxs
+filecount=$(ls -1 script_nxs | wc -l)
+counter=0
+
+for file in script_nxs/*
 do
     file="$(basename "$file")"
-    echo $file
-    python2 scripts/script_redirect.py script_nxs/$file > script/temp/$file.out
-    python2 scripts/pyc_decryptor.py script/temp/$file.out script/pyc/$file.pyc
-    python3 scripts/decompile_pyc.py -o script/out/$file.py script/pyc/$file.pyc 2> /dev/null
+    echo "$((100*$counter/$filecount))% - $file"
+    python2 scripts/script_redirect.py script_nxs/$file > script/temp/$file.out # Decrypts into nxs
+    python2 scripts/pyc_decryptor.py script/temp/$file.out script/pyc/$file.pyc # Demangles opcodes of nxs into pyc
+    python3 scripts/decompile_pyc.py -o script/out/$file.py script/pyc/$file.pyc 2> /dev/null # Decompiles pyc into py
     if [ $? -ne 0 ]
     then 
-        echo "Failed...sad face"
+        echo "Failed...sad face. Copied to script/failed"
+        cp "script_nxs/$file" "script/failed"
         # echo "Trying pycdc"
         # pycdc/pycdc script/pyc/$file.pyc > script/out/$file.py
         # if [ $? -ne 0 ]
@@ -32,4 +37,5 @@ do
         mkdir -p script/layout/$file_dir
         cp script/out/$file.py script/layout/$file_name
     fi
+    counter=$(($counter+1))
 done
