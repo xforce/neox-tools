@@ -295,10 +295,8 @@ impl Npk2Reader {
         } else {
             // Load all the indices from the NPK File
             let mut buffer_cursor = std::io::Cursor::new(buffer);
-            let mut sub_buffer = vec![0; 0x28 as usize];
-            let mut index_buffer = buffer_cursor.read_exact(&mut sub_buffer);
-            while index_buffer.is_ok() {
-                index_buffer = buffer_cursor.read_exact(&mut sub_buffer);
+            let mut sub_buffer = vec![0; self.header.size_of_index_entry() as usize];
+            while buffer_cursor.read_exact(&mut sub_buffer).is_ok() {
                 let index = NeoXIndex2::from_slice(sub_buffer.as_mut_slice())?;
                 self.indices.push(index);
             }
