@@ -1,7 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use clap::{App, Arg};
 use log::{debug, error, info, trace, warn};
-use std::io::{BufReader, Read, Seek};
+use std::io::{BufRead, BufReader, Read, Seek};
 
 fn is_eof<T>(reader: &mut std::io::BufReader<T>) -> std::io::Result<bool>
 where
@@ -237,12 +237,6 @@ impl Npk2Reader {
         let index_size = reader.read_u32::<LittleEndian>()?;
         let mut field_28 = reader.read_u32::<LittleEndian>()?; // DATA END MAYBE?
 
-        // info!("File Size:\t{}", size);
-        // info!("NPK Magic:\t{:X}", magic);
-        // info!("NPK File Count:\t{}", file_count);
-        // info!("NPK Is Large File:\t{}", large_file_index_offset > 0);
-        // info!("NPK Index Offset:\t{}", index_offset);
-
         // TODO(alexander): Figure out what this actually does and why we need it
         // in Eve Echoes NPKs we usually run into the first case, where we change field 28
         let v5 = ((field_28 as i64 - index_size as i64) >> 3) as u64 / 5; // No idea why divide by 5, but it is a thing :)
@@ -281,12 +275,6 @@ impl Npk2Reader {
 
     pub fn open(&mut self) -> Result<(), Npk2Error> {
         let mut reader = BufReader::new(&self.file);
-
-        // info!("File Size:\t{}", size);
-        // info!("NPK Magic:\t{:X}", magic);
-        // info!("NPK File Count:\t{}", file_count);
-        // info!("NPK Is Large File:\t{}", large_file_index_offset > 0);
-        // info!("NPK Index Offset:\t{}", index_offset);
 
         let pos = reader.seek(std::io::SeekFrom::Start(self.header.index_offset()))?;
         assert!(pos == self.header.index_offset());
@@ -329,113 +317,185 @@ impl Npk2Reader {
     }
 }
 
+fn load_file_name_hash_mappings<T>(reader: &mut T) -> std::collections::HashMap<u64, String>
+where
+    T: std::io::BufRead,
+{
+    info!("Parsing filelist");
+    let mut file_mappings = std::collections::HashMap::new();
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            //
+            // <type> <hash>    <unkown>   <size>  0   <filename>
+            let r = regex::Regex::new(
+                r"(\S+)(?:\s+)(\S+)(?:\s+)(\S+)(?:\s+)(\S+)(?:\s+)(\S+)(?:\s+)(\S.*)",
+            )
+            .unwrap();
+            let caps = r.captures(&line);
+            if let Some(caps) = caps {
+                let name_hash = caps.get(2).unwrap().as_str().parse::<u64>().unwrap();
+                let filename = caps.get(6).unwrap().as_str();
+                file_mappings.insert(name_hash, filename.to_string());
+            }
+        }
+    }
+    file_mappings
+}
+
 fn main() -> Result<(), Npk2Error> {
     simple_logger::init_with_level(log::Level::Info).unwrap();
 
-    // let string = "redirect.nxs";
-    // let v1 = Hash32::hash_with_seed(string, 0x9747B28C);
-    // let v2 = Hash32::hash_with_seed(string, 0xC82B7479);
+    // let string = "test";
+    // let v1 = fasthash::murmur3::hash32_with_seed(string, 0x9747B28C);
+    // let v2 = fasthash::murmur3::hash32_with_seed(string, 0xC82B7479);
 
-    // println!("{:X}", (v1 as u64 | (v2 as u64) << 0x20) as u64);
+    // println!("{:X}", (v2 as u64 | (v1 as u64) << 0x20) as u64);
 
     let matches = App::new("NeoX NPK Tool")
         .version("1.0")
         .author("Alexander Guettler <alexander@guettler.io>")
+        .subcommand(App::new("x")
+        .about("Unpack one or more NPKS")
         .arg(
-            Arg::with_name("MODE")
-                .possible_values(&["x", "p"]) // TODO(alexander): Add some kind of info mode, print file count etc.
-                .about("Specifies whether to extract (x) or pack (p) the specified directory")
+            Arg::with_name("INPUT")
+                .about("The NPK file(s) to be operated on")
                 .required(true)
+                .multiple(true)
                 .index(1),
         )
         .arg(
-            Arg::with_name("INPUT")
-                .about("The NPK file to be operated on")
-                .required(true)
-                .index(2),
-        )
-        .arg(
             Arg::with_name("DIR")
+                .short('d')
+                .long("dir")
                 .value_name("DIR")
                 .about("The directory where this NPK file should be extracted to")
                 .default_value("out")
-                .index(3)
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("FILELIST")
+            .short('f')
+            .long("filelist")
+            .value_name(
+                "FILELIST"
+            ).about("Supplies a file list to the npk unpack which will be used to try and reconstruct the original file tree\nWhen INPUT is supplied with a list of all resX.npk files this may be determined and used automatically.")
+        ))
         .get_matches();
 
-    let input_file = matches.value_of("INPUT").unwrap();
-    let mut npk_file = Npk2Reader::new(input_file)?;
-    npk_file.open()?;
+    match matches.subcommand() {
+        ("x", Some(sub_m)) => {
+            let input_files: Vec<&str> = sub_m.values_of("INPUT").unwrap().collect();
 
-    let mode = matches.value_of("MODE").unwrap();
+            let mut npk_readers = Vec::new();
+            for input_file in input_files {
+                let mut npk_file = Npk2Reader::new(input_file)?;
+                npk_file.open()?;
+                npk_readers.push(npk_file);
+            }
 
-    match mode {
-        "x" => {
-            let output_directory = std::path::Path::new(matches.value_of("DIR").unwrap());
-            let output_sub_directory = match std::path::Path::new(&input_file).file_stem() {
-                Some(v) => v.to_str().unwrap_or(""),
-                None => "",
+            let file_list = match sub_m.value_of("FILELIST") {
+                Some(path) => {
+                    let file = std::fs::File::open(path)?;
+                    load_file_name_hash_mappings(&mut BufReader::new(file))
+                }
+                None => {
+                    match npk_readers
+                        .iter()
+                        .map(|x| x.indices().iter().map(|i| (x, i)).collect::<Vec<_>>())
+                        .collect::<Vec<Vec<_>>>()
+                        .into_iter()
+                        .flatten()
+                        .find(|(_, x)| x.name_hash() == 0xD4A17339F75381FD)
+                    {
+                        Some((npk_file, index)) => {
+                            let content = npk_file.read_content_for_index(index)?;
+                            let mut decompressed = Vec::new();
+                            compress::zlib::Decoder::new(std::io::Cursor::new(&content))
+                                .read_to_end(&mut decompressed)?;
+                            load_file_name_hash_mappings(&mut std::io::Cursor::new(&decompressed))
+                        }
+                        None => std::collections::HashMap::new(),
+                    }
+                }
             };
-            let output_directory = output_directory.join(output_sub_directory);
+
+            let output_directory = std::path::Path::new(sub_m.value_of("DIR").unwrap());
             std::fs::create_dir_all(&output_directory)?;
 
-            for index in npk_file.indices() {
-                debug!("Reading Index {:?}", index);
-                //
-                let content = npk_file.read_content_for_index(index)?;
-                let result = tree_magic::from_u8(&content);
-                let extension = match result.as_str() {
-                    "text/plain" => "txt",
-                    "application/octet-stream" => {
-                        let mut rdr = std::io::Cursor::new(&content);
-                        let magic = rdr.read_u32::<LittleEndian>();
-                        match magic {
-                            Ok(magic) => {
-                                // Detect NXS and stuff, which is a NeoX Script File
-                                if magic == 0x041D {
-                                    "nxs"
-                                } else if magic & 0xFFFF == 0x041D {
-                                    "nxs"
-                                } else {
-                                    "dat"
-                                }
-                            }
-                            Err(_) => "dat",
-                        }
-                    }
-                    "application/x-executable" => "exe",
-                    "application/x-cpio" => "cpio",
-                    "image/ktx" => "ktx",
-                    "image/png" => "png",
-                    "image/x-dds" => "dds",
-                    "image/x-win-bitmap" => "bmp",
-                    "application/xml" => "xml",
-                    "text/x-matlab" => "mat", // Maybe m instead?
-                    "application/x-apple-systemprofiler+xml" => "xml",
-                    "text/x-modelica" => "mo",
-                    "text/x-csrc" => "c",
-                    "font/ttf" => "ttf",
-                    "image/bmp" => "bmp",
-                    "application/zip" => "zip",
-                    "image/jpeg" => "jpg",
-                    _ => {
-                        error!("Unhandled mime type {}", result);
-                        "dat"
-                    }
-                };
+            for npk_file in npk_readers {
+                for index in npk_file.indices() {
+                    debug!("Reading Index {:?}", index);
 
-                let out_file =
-                    output_directory.join(format!("{:X}.{}", index.name_hash(), extension));
-                info!(
-                    "Writing {} bytes to {}",
-                    bytesize::ByteSize(content.len() as u64),
-                    out_file.as_path().to_str().unwrap()
-                );
-                std::fs::write(out_file, &content)?;
+                    let content = npk_file.read_content_for_index(index)?;
+                    let file_name = match file_list.get(&index.name_hash()) {
+                        Some(file_name) => file_name.clone(),
+                        None => {
+                            // This is a massive hack, but oh well
+                            // We know the hash, and we know what the file is
+                            // zlib compressed data
+                            if index.name_hash() == 0xD4A17339F75381FD {
+                                "filelist.txt".to_string()
+                            } else {
+                                let result = tree_magic::from_u8(&content);
+                                let extension = match result.as_str() {
+                                    "text/plain" => "txt",
+                                    "application/octet-stream" => {
+                                        let mut rdr = std::io::Cursor::new(&content);
+                                        let magic = rdr.read_u32::<LittleEndian>();
+                                        match magic {
+                                            Ok(magic) => {
+                                                // Detect NXS and stuff, which is a NeoX Script File
+                                                if magic == 0x041D {
+                                                    "nxs"
+                                                } else if magic & 0xFFFF == 0x041D {
+                                                    "nxs"
+                                                } else {
+                                                    "dat"
+                                                }
+                                            }
+                                            Err(_) => "dat",
+                                        }
+                                    }
+                                    "application/x-executable" => "exe",
+                                    "application/x-cpio" => "cpio",
+                                    "image/ktx" => "ktx",
+                                    "image/png" => "png",
+                                    "image/x-dds" => "dds",
+                                    "image/x-win-bitmap" => "bmp",
+                                    "application/xml" => "xml",
+                                    "text/x-matlab" => "mat", // Maybe m instead?
+                                    "application/x-apple-systemprofiler+xml" => "xml",
+                                    "text/x-modelica" => "mo",
+                                    "text/x-csrc" => "c",
+                                    "font/ttf" => "ttf",
+                                    "image/bmp" => "bmp",
+                                    "application/zip" => "zip",
+                                    "image/jpeg" => "jpg",
+                                    _ => {
+                                        error!("Unhandled mime type {}", result);
+                                        "dat"
+                                    }
+                                };
+                                format!("unknown_file_name/{:X}.{}", index.name_hash(), extension)
+                            }
+                        }
+                    };
+                    //
+
+                    let out_file = output_directory.join(file_name);
+                    if let Some(dir_path) = std::path::Path::new(&out_file).parent() {
+                        std::fs::create_dir_all(dir_path)?;
+                    }
+                    info!(
+                        "Writing {} bytes to {}",
+                        bytesize::ByteSize(content.len() as u64),
+                        out_file.as_path().to_str().unwrap()
+                    );
+                    std::fs::write(out_file, &content)?;
+                }
             }
         }
-        "p" => unimplemented!("Packing is currently not supported"),
+        ("p", Some(sub_m)) => unimplemented!("Packing is currently not supported"),
         _ => {}
     }
 
