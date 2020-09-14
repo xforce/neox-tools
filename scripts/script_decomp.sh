@@ -3,7 +3,7 @@
 mkdir -p script/temp
 mkdir -p script/pyc
 mkdir -p script/out
-mkdir -p script/failed/
+mkdir -p script/failed
 
 filecount=$(ls -1 script_nxs | wc -l)
 counter=0
