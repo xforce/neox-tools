@@ -9,4 +9,4 @@ sys.path.insert(0, os.path.join(dir_path, "python-uncompyle6"))
 
 from uncompyle6.bin.uncompile import main_bin
 
-main_bin()
+main_bin("utf-8")
