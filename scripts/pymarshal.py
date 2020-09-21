@@ -27,8 +27,9 @@ class BinaryComplex(object):
 
 
 class StringRef(object):
-    def __init__(self, val):
+    def __init__(self, val, index):
         self.value = val
+        self.index = index
 
     def decode(self):
         return self.value.decode()
@@ -47,6 +48,29 @@ class Intern(object):
 class Int64(object):
     def __init__(self, val):
         self.value = val
+
+
+class CodeType(object):
+    def __init__(self, argcount, nlocals, stacksize, flags, code, consts,
+                 names, varnames, filename, name, firstlineno,
+                 lnotab, freevars, cellvars):
+        self.orig_args = (argcount, nlocals, stacksize, flags, code, consts,
+                          names, varnames, filename, name, firstlineno,
+                          lnotab, freevars, cellvars)
+        if PYTHON3:
+            self.co_filename = filename.decode()
+            self.code = types.CodeType(argcount, 0, 0, nlocals, stacksize, flags, code, consts,
+                                       tuple(map(lambda x: x.decode(), names)), tuple(map(lambda x: x.decode(), varnames)
+                                                                                      ), filename.decode(
+                                       ), name.decode(), firstlineno,
+                                       lnotab, tuple(map(lambda x: x.decode(), freevars)
+                                                     ), tuple(map(lambda x: x.decode(), cellvars)
+                                                              ))
+        else:
+            self.co_filename = filename
+            self.code = types.CodeType(argcount, nlocals, stacksize, flags, code, consts,
+                                       names, varnames, filename, name, firstlineno,
+                                       lnotab, freevars, cellvars)
 
 
 TYPE_NULL = '0'
@@ -303,26 +327,29 @@ class _Marshaller:
     dispatch[dict] = dump_dict
 
     def dump_code(self, x):
+        (co_argcount, co_nlocals, co_stacksize, co_flags, _code, co_consts,
+         co_names, co_varnames, co_filename, co_name, co_firstlineno,
+         co_lnotab, co_freevars, co_cellvars) = x.orig_args
         self._write(TYPE_CODE)
-        self.w_long(x.co_argcount)
-        self.w_long(x.co_nlocals)
-        self.w_long(x.co_stacksize)
-        self.w_long(x.co_flags)
+        self.w_long(co_argcount)
+        self.w_long(co_nlocals)
+        self.w_long(co_stacksize)
+        self.w_long(co_flags)
 
-        self.dump(self._transform_opcode(x.co_code))
+        self.dump(self._transform_opcode(x.code.co_code))
 
-        self.dump(x.co_consts)
-        self.dump(x.co_names)
-        self.dump(x.co_varnames)
-        self.dump(x.co_freevars)
-        self.dump(x.co_cellvars)
-        self.dump(x.co_filename)
-        self.dump(x.co_name)
-        self.w_long(x.co_firstlineno)
-        self.dump(x.co_lnotab)
+        self.dump(co_consts)
+        self.dump(co_names)
+        self.dump(co_varnames)
+        self.dump(co_freevars)
+        self.dump(co_cellvars)
+        self.dump(co_filename)
+        self.dump(co_name)
+        self.w_long(co_firstlineno)
+        self.dump(co_lnotab)
 
     try:
-        dispatch[types.CodeType] = dump_code
+        dispatch[CodeType] = dump_code
     except NameError:
         pass
 
@@ -523,7 +550,7 @@ class _Unmarshaller:
 
     def load_stringref(self):
         n = self.r_long()
-        return StringRef(self._stringtable[n])
+        return StringRef(self._stringtable[n], n)
 
     dispatch[TYPE_STRINGREF] = load_stringref
 
@@ -582,18 +609,9 @@ class _Unmarshaller:
         name = self.load()
         firstlineno = self.r_long()
         lnotab = self.load()
-        if PYTHON3:
-            r = types.CodeType(argcount, 0, 0, nlocals, stacksize, flags, code, consts,
-                               tuple(map(lambda x: x.decode(), names)), tuple(map(lambda x: x.decode(), varnames)
-                                                                              ), filename.decode(
-                               ), name.decode(), firstlineno,
-                               lnotab, tuple(map(lambda x: x.decode(), freevars)
-                                             ), tuple(map(lambda x: x.decode(), cellvars)
-                                                      ))
-        else:
-            r = types.CodeType(argcount, nlocals, stacksize, flags, code, consts,
-                               names, varnames, filename, name, firstlineno,
-                               lnotab, freevars, cellvars)
+        r = CodeType(argcount, nlocals, stacksize, flags, code, consts,
+                     names, varnames, filename, name, firstlineno,
+                     lnotab, freevars, cellvars)
         return r
 
     dispatch[TYPE_CODE] = load_code
