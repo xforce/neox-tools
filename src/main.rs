@@ -523,14 +523,14 @@ fn main() -> Result<(), Npk2Error> {
         .subcommand(App::new("x")
         .about("Unpack one or more NPKS")
         .arg(
-            Arg::with_name("INPUT")
+            Arg::new("INPUT")
                 .about("The NPK file(s) to be operated on")
                 .required(true)
                 .multiple(true)
                 .index(1),
         )
         .arg(
-            Arg::with_name("DIR")
+            Arg::new("DIR")
                 .short('d')
                 .long("dir")
                 .value_name("DIR")
@@ -539,7 +539,7 @@ fn main() -> Result<(), Npk2Error> {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("FILELIST")
+            Arg::new("FILELIST")
             .short('f')
             .long("filelist")
             .value_name(
@@ -549,7 +549,7 @@ fn main() -> Result<(), Npk2Error> {
         .get_matches();
 
     match matches.subcommand() {
-        ("x", Some(sub_m)) => {
+        Some(("x", sub_m)) => {
             let input_files: Vec<&str> = sub_m.values_of("INPUT").unwrap().collect();
 
             let mut npk_readers = Vec::new();
@@ -678,7 +678,7 @@ fn main() -> Result<(), Npk2Error> {
                 }
             }
         }
-        ("p", Some(_)) => unimplemented!("Packing is currently not supported"),
+        Some(("p", _)) => unimplemented!("Packing is currently not supported"),
         _ => {}
     }
 

@@ -5,7 +5,10 @@ import zlib
 import marshal
 import binascii
 import argparse
+import sys
 import pymarshal
+
+PYTHON3 = sys.version_info >= (3, 0)
 
 
 class PYCEncryptor(object):
@@ -139,16 +142,17 @@ class PYCEncryptor(object):
 
     def _decrypt_file(self, filename):
         os.path.splitext(filename)
-        content = open(filename).read()
+        content = open(filename, "rb").read()
+
         try:
             m = pymarshal.loads(content)
-        except:
+        except RuntimeError as e:
+            print(e)
             try:
                 m = marshal.loads(content)
             except Exception as e:
                 print("[!] error: %s" % str(e))
                 return None
-        # pymarshal.dumps(m, self.opcode_decrypt_map)
         return m.co_filename.replace('\\', '/'), pymarshal.dumps(m, self.opcode_decrypt_map)
 
     def decrypt_file(self, input_file, output_file=None):
@@ -159,11 +163,15 @@ class PYCEncryptor(object):
         if not output_file:
             output_file = os.path.basename(pyc_filename) + '.pyc'
         with open(output_file, 'wb') as fd:
-            fd.write(self.pyc27_header + pyc_content)
+            if not PYTHON3:
+                fd.write(self.pyc27_header + pyc_content)
+            else:
+                fd.write(bytearray(
+                    map(lambda x: int(ord(x)), self.pyc27_header)) + pyc_content)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='onmyoji py decrypt tool')
+    parser = argparse.ArgumentParser(description='neox py decrypt tool')
     parser.add_argument("INPUT_NAME", help='input file')
     parser.add_argument("OUTPUT_NAME", help='output file')
     args = parser.parse_args()

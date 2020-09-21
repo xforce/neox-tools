@@ -1,5 +1,19 @@
 import types
-import cStringIO
+try:
+    import cStringIO
+except:
+    from io import BytesIO
+import sys
+
+PYTHON3 = sys.version_info >= (3, 0)
+
+
+def try_ord(x):
+    if type(x) is not int:
+        return ord(x)
+    else:
+        return x
+
 
 TYPE_NULL = '0'
 TYPE_NONE = 'N'
@@ -10,6 +24,7 @@ TYPE_ELLIPSIS = '.'
 TYPE_INT = 'i'
 TYPE_INT64 = 'I'
 TYPE_FLOAT = 'f'
+TYPE_BINARY_FLOAT = 'g'
 TYPE_COMPLEX = 'x'
 TYPE_LONG = 'l'
 TYPE_STRING = 's'
@@ -23,7 +38,6 @@ TYPE_UNICODE = 'u'
 TYPE_UNKNOWN = '?'
 TYPE_SET = '<'
 TYPE_FROZENSET = '>'
-
 
 UNKNOWN_BYTECODE = 0
 
@@ -126,7 +140,11 @@ class _Marshaller:
     try:
         long
     except NameError:
-        dispatch[int] = dump_long
+        # We want to produce Python2 output
+        # This would cause all ints to be dumped as longs
+        # Which is not what we want...
+        if not PYTHON3:
+            dispatch[int] = dump_long
     else:
         dispatch[long] = dump_long
 
@@ -164,7 +182,13 @@ class _Marshaller:
     dispatch[bytes] = dump_string
 
     def dump_unicode(self, x):
-        self._write(TYPE_UNICODE)
+        # NOTE(alexander): Our target is Python2
+        # Unicode seems to be rarely used
+        # So you know, just do string, I guess
+        if PYTHON3:
+            self._write(TYPE_STRING)
+        else:
+            self._write(TYPE_UNICODE)
         s = x.encode('utf8')
         self.w_long(len(s))
         self._write(s)
@@ -245,8 +269,10 @@ class _Marshaller:
                 c += 1
             else:
                 c += 3
-
-        return str(opcode)
+        if not PYTHON3:
+            return str(opcode)
+        else:
+            return bytes(opcode)
 
     def dump_set(self, x):
         self._write(TYPE_SET)
@@ -283,13 +309,16 @@ class _Unmarshaller:
         if not c:
             raise EOFError
         try:
+            if type(c) is not str:
+                c = c.decode()
             return self.dispatch[c](self)
         except KeyError:
-            raise ValueError("bad marshal code: %c (%d)" % (c, ord(c)))
+            print(self.dispatch.keys())
+            raise ValueError("bad marshal code: %c (%d)" % (c, try_ord(c)))
 
     def r_short(self):
-        lo = ord(self._read(1))
-        hi = ord(self._read(1))
+        lo = try_ord(self._read(1))
+        hi = try_ord(self._read(1))
         x = lo | (hi << 8)
         if x & 0x8000:
             x = x - 0x10000
@@ -297,10 +326,10 @@ class _Unmarshaller:
 
     def r_long(self):
         s = self._read(4)
-        a = ord(s[0])
-        b = ord(s[1])
-        c = ord(s[2])
-        d = ord(s[3])
+        a = try_ord(s[0])
+        b = try_ord(s[1])
+        c = try_ord(s[2])
+        d = try_ord(s[3])
         x = a | (b << 8) | (c << 16) | (d << 24)
         if d & 0x80 and x > 0:
             x = -((1 << 32) - x)
@@ -309,14 +338,14 @@ class _Unmarshaller:
             return x
 
     def r_long64(self):
-        a = ord(self._read(1))
-        b = ord(self._read(1))
-        c = ord(self._read(1))
-        d = ord(self._read(1))
-        e = ord(self._read(1))
-        f = ord(self._read(1))
-        g = ord(self._read(1))
-        h = ord(self._read(1))
+        a = try_ord(self._read(1))
+        b = try_ord(self._read(1))
+        c = try_ord(self._read(1))
+        d = try_ord(self._read(1))
+        e = try_ord(self._read(1))
+        f = try_ord(self._read(1))
+        g = try_ord(self._read(1))
+        h = try_ord(self._read(1))
         x = a | (b << 8) | (c << 16) | (d << 24)
         x = x | (e << 32) | (f << 40) | (g << 48) | (h << 56)
         if h & 0x80 and x > 0:
@@ -372,17 +401,23 @@ class _Unmarshaller:
     dispatch[TYPE_LONG] = load_long
 
     def load_float(self):
-        n = ord(self._read(1))
+        n = try_ord(self._read(1))
         s = self._read(n)
         return float(s)
 
     dispatch[TYPE_FLOAT] = load_float
 
+    def load_binary_float(self):
+        import struct
+        return struct.unpack('d', self._read(8))[0]
+
+    dispatch[TYPE_BINARY_FLOAT] = load_binary_float
+
     def load_complex(self):
-        n = ord(self._read(1))
+        n = try_ord(self._read(1))
         s = self._read(n)
         real = float(s)
-        n = ord(self._read(1))
+        n = try_ord(self._read(1))
         s = self._read(n)
         imag = float(s)
         return complex(real, imag)
@@ -397,7 +432,7 @@ class _Unmarshaller:
 
     def load_interned(self):
         n = self.r_long()
-        ret = intern(self._read(n))
+        ret = self._read(n)
         self._stringtable.append(ret)
         return ret
 
@@ -456,9 +491,19 @@ class _Unmarshaller:
         name = self.load()
         firstlineno = self.r_long()
         lnotab = self.load()
-        return types.CodeType(argcount, nlocals, stacksize, flags, code, consts,
-                              names, varnames, filename, name, firstlineno,
-                              lnotab, freevars, cellvars)
+        if PYTHON3:
+            r = types.CodeType(argcount, 0, 0, nlocals, stacksize, flags, code, consts,
+                               tuple(map(lambda x: x.decode(), names)), tuple(map(lambda x: x.decode(), varnames)
+                                                                              ), filename.decode(
+                               ), name.decode(), firstlineno,
+                               lnotab, tuple(map(lambda x: x.decode(), freevars)
+                                             ), tuple(map(lambda x: x.decode(), cellvars)
+                                                      ))
+        else:
+            r = types.CodeType(argcount, nlocals, stacksize, flags, code, consts,
+                               names, varnames, filename, name, firstlineno,
+                               lnotab, freevars, cellvars)
+        return r
 
     dispatch[TYPE_CODE] = load_code
 
@@ -478,7 +523,16 @@ class _Unmarshaller:
 
 
 def dump(x, f, opmap=None):
-    m = _Marshaller(f.write, opmap)
+    if not PYTHON3:
+        writefunc = f.write
+    else:
+        def writefunc(x):
+            if type(x) is not bytes:
+                x = bytearray(map(lambda x: int(try_ord(x)), x))
+                return f.write(x)
+            else:
+                return f.write(x)
+    m = _Marshaller(writefunc, opmap)
     m.dump(x)
 
 
@@ -488,12 +542,18 @@ def load(f):
 
 
 def loads(content):
-    io = cStringIO.StringIO(content)
+    if not PYTHON3:
+        io = cStringIO.StringIO(content)
+    else:
+        io = BytesIO(content)
     return load(io)
 
 
 def dumps(x, opmap=None):
-    io = cStringIO.StringIO()
+    if not PYTHON3:
+        io = cStringIO.StringIO()
+    else:
+        io = BytesIO()
     dump(x, io, opmap)
     io.seek(0)
     return io.read()
