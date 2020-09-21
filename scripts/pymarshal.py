@@ -15,6 +15,40 @@ def try_ord(x):
         return x
 
 
+class Unicode(object):
+    def __init__(self, val):
+        self.value = val
+
+
+class BinaryComplex(object):
+    def __init__(self, real, imag):
+        self.real = real
+        self.imag = imag
+
+
+class StringRef(object):
+    def __init__(self, val):
+        self.value = val
+
+    def decode(self):
+        return self.value.decode()
+
+
+class Intern(object):
+    def __init__(self, val):
+        self.value = val
+
+    def decode(self):
+        return self.value.decode()
+
+# UNUSED!
+
+
+class Int64(object):
+    def __init__(self, val):
+        self.value = val
+
+
 TYPE_NULL = '0'
 TYPE_NONE = 'N'
 TYPE_FALSE = 'F'
@@ -26,6 +60,7 @@ TYPE_INT64 = 'I'
 TYPE_FLOAT = 'f'
 TYPE_BINARY_FLOAT = 'g'
 TYPE_COMPLEX = 'x'
+TYPE_BINARY_COMPLEX = 'y'
 TYPE_LONG = 'l'
 TYPE_STRING = 's'
 TYPE_INTERNED = 't'
@@ -52,6 +87,7 @@ class _Marshaller:
     def __init__(self, writefunc, opmap=None):
         self._write = writefunc
         self._opmap = opmap or {}
+        self._stringtable = []
 
     def dump(self, x):
         try:
@@ -157,6 +193,12 @@ class _Marshaller:
 
     dispatch[float] = dump_float
 
+    def dump_binary_float(self, x):
+        write = self._write
+        write(TYPE_BINARY_FLOAT)
+        import struct
+        write(struct.pack('d', x))
+
     def dump_complex(self, x):
         write = self._write
         write(TYPE_COMPLEX)
@@ -172,6 +214,15 @@ class _Marshaller:
     except NameError:
         pass
 
+    def dump_binary_complex(self, x):
+        import struct
+        write = self._write
+        write(TYPE_BINARY_COMPLEX)
+        write(struct.pack('d', x.real))
+        write(struct.pack('d', x.imag))
+
+    dispatch[BinaryComplex] = dump_binary_complex
+
     def dump_string(self, x):
         # XXX we can't check for interned strings, yet,
         # so we (for now) never create TYPE_INTERNED or TYPE_STRINGREF
@@ -181,15 +232,40 @@ class _Marshaller:
 
     dispatch[bytes] = dump_string
 
+    def dump_interned(self, x):
+        self._stringtable.append(x.value)
+        self._write(TYPE_INTERNED)
+        self.w_long(len(x.value))
+        self._write(x.value)
+
+    dispatch[Intern] = dump_interned
+
+    def dump_stringref(self, x):
+        self._write(TYPE_STRINGREF)
+        self.w_long(self._stringtable.index(x.value))
+
+    dispatch[StringRef] = dump_stringref
+
     def dump_unicode(self, x):
-        # NOTE(alexander): Our target is Python2
-        # Unicode seems to be rarely used
-        # So you know, just do string, I guess
-        if PYTHON3:
-            self._write(TYPE_STRING)
-        else:
+        # TODO(alexander):
+        # There are cases in Python 2 where this _should_
+        # end up being string to make uncompyle work
+        # I think that is a limitation in uncompyle, but OH WELL
+        # We _can_ detect this when this script is run via Python 3
+        # but not when run via Python 2...which is somewhat unfortunate
+        is_unicode = type(x) is Unicode
+        is_bytes = is_unicode and type(x.value) is bytes
+        if (is_unicode and not is_bytes) or not PYTHON3:
             self._write(TYPE_UNICODE)
-        s = x.encode('utf8')
+        else:
+            self._write(TYPE_STRING)
+
+        if is_unicode:
+            s = x.value
+            if not is_bytes:
+                s = x.value.encode('utf8')
+        else:
+            s = x.encode('utf8')
         self.w_long(len(s))
         self._write(s)
 
@@ -197,6 +273,7 @@ class _Marshaller:
         unicode
     except NameError:
         dispatch[str] = dump_unicode
+        dispatch[Unicode] = dump_unicode
     else:
         dispatch[unicode] = dump_unicode
 
@@ -231,7 +308,6 @@ class _Marshaller:
         self.w_long(x.co_nlocals)
         self.w_long(x.co_stacksize)
         self.w_long(x.co_flags)
-        # self.dump(x.co_code)
 
         self.dump(self._transform_opcode(x.co_code))
 
@@ -424,6 +500,13 @@ class _Unmarshaller:
 
     dispatch[TYPE_COMPLEX] = load_complex
 
+    def load_binary_complex(self):
+        real = self.load_binary_float()
+        imag = self.load_binary_float()
+        return BinaryComplex(real, imag)
+
+    dispatch[TYPE_BINARY_COMPLEX] = load_binary_complex
+
     def load_string(self):
         n = self.r_long()
         return self._read(n)
@@ -434,20 +517,28 @@ class _Unmarshaller:
         n = self.r_long()
         ret = self._read(n)
         self._stringtable.append(ret)
-        return ret
+        return Intern(ret)
 
     dispatch[TYPE_INTERNED] = load_interned
 
     def load_stringref(self):
         n = self.r_long()
-        return self._stringtable[n]
+        return StringRef(self._stringtable[n])
 
     dispatch[TYPE_STRINGREF] = load_stringref
 
     def load_unicode(self):
         n = self.r_long()
         s = self._read(n)
-        ret = s.decode('utf8')
+        # if decoding to uf8 failes
+        # then this is likely a bytes (str in python2) thing
+        # _should_ be fine
+        try:
+            ret = s.decode('utf8')
+        except:
+            ret = s
+        if PYTHON3:
+            ret = Unicode(ret)
         return ret
 
     dispatch[TYPE_UNICODE] = load_unicode
