@@ -2,3 +2,4 @@ out/
 *.npk
 *.pyc
 
+/scripts/script_redirect_plug.py
