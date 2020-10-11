@@ -1,6 +1,6 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use clap::{App, Arg};
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
 use std::io::{BufRead, BufReader, Read, Seek};
 
 fn is_eof<T>(reader: &mut std::io::BufReader<T>) -> std::io::Result<bool>
@@ -27,7 +27,7 @@ where
 
 #[derive(Debug)]
 enum NeoXIndexError {
-    InvalidSize,
+    // InvalidSize, TODO(alexander): We do want to handle this at some point
     IoError(std::io::Error),
     UnkownCompressType,
     UnknownEncryptType,
@@ -500,6 +500,21 @@ where
                 let name_hash = caps.get(2).unwrap().as_str().parse::<u64>().unwrap();
                 let filename = caps.get(6).unwrap().as_str();
                 file_mappings.insert(name_hash, filename.to_string());
+            } else {
+                use murmur3::murmur3_32;
+                use std::io::Cursor;
+                let top = murmur3_32(
+                    &mut Cursor::new(line.clone().replace("/", "\\")),
+                    0x9747B28C,
+                )
+                .unwrap();
+                let bottom = murmur3_32(
+                    &mut Cursor::new(line.clone().replace("/", "\\")),
+                    0xC82B7479,
+                )
+                .unwrap();
+                let hash = (bottom as i64 | (top as i64) << 0x20) as i64;
+                file_mappings.insert(hash as u64, line.to_string());
             }
         }
     }
@@ -507,15 +522,10 @@ where
 }
 
 fn main() -> Result<(), Npk2Error> {
-    simple_logger::init_with_level(log::Level::Info).unwrap();
-
-    // let string = "version.nxs";
-    // let v1 = fasthash::murmur3::hash32_with_seed(string, 0x9747B28C);
-    // let v2 = fasthash::murmur3::hash32_with_seed(string, 0xC82B7479);
-
-    // println!("{:}", (v2 as u64 | (v1 as u64) << 0x20) as u64);
-
-    // return Ok(());
+    simple_logger::SimpleLogger::new()
+        .with_level(log::LevelFilter::Info)
+        .init()
+        .unwrap();
 
     let matches = App::new("NeoX NPK Tool")
         .version("1.0")
@@ -571,14 +581,23 @@ fn main() -> Result<(), Npk2Error> {
                         .collect::<Vec<Vec<_>>>()
                         .into_iter()
                         .flatten()
-                        .find(|(_, x)| x.name_hash() == 0xD4A17339F75381FD)
-                    {
+                        .find(|(_, x)| {
+                            x.name_hash() == 0xD4A17339F75381FD
+                                || x.name_hash() == 0xE581738CE3FD567E
+                        }) {
                         Some((npk_file, index)) => {
                             let content = npk_file.read_content_for_index(index)?;
                             let mut decompressed = Vec::new();
-                            compress::zlib::Decoder::new(std::io::Cursor::new(&content))
-                                .read_to_end(&mut decompressed)?;
-                            load_file_name_hash_mappings(&mut std::io::Cursor::new(&decompressed))
+                            match compress::zlib::Decoder::new(std::io::Cursor::new(&content))
+                                .read_to_end(&mut decompressed)
+                            {
+                                Ok(_) => load_file_name_hash_mappings(&mut std::io::Cursor::new(
+                                    &decompressed,
+                                )),
+                                Err(_) => load_file_name_hash_mappings(&mut std::io::Cursor::new(
+                                    &content,
+                                )),
+                            }
                         }
                         None => std::collections::HashMap::new(),
                     }
@@ -588,7 +607,7 @@ fn main() -> Result<(), Npk2Error> {
             let output_directory = std::path::Path::new(sub_m.value_of("DIR").unwrap());
             std::fs::create_dir_all(&output_directory)?;
 
-            use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+            use indicatif::{ProgressBar, ProgressStyle};
             let pb = ProgressBar::new(
                 npk_readers
                     .iter()
@@ -609,7 +628,11 @@ fn main() -> Result<(), Npk2Error> {
                             // This is a massive hack, but oh well
                             // We know the hash, and we know what the file is
                             // zlib compressed data
-                            if index.name_hash() == 0xD4A17339F75381FD {
+                            // Or in-case of some other npk files there is a different
+                            // plain text file with a list of files
+                            if index.name_hash() == 0xD4A17339F75381FD
+                                || index.name_hash() == 0xE581738CE3FD567E
+                            {
                                 "filelist.txt".to_string()
                             } else {
                                 let result = tree_magic::from_u8(&content);
