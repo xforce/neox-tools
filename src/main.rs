@@ -481,7 +481,7 @@ impl NpkReader {
     }
 }
 
-fn load_file_name_hash_mappings<T>(reader: &mut T) -> std::collections::HashMap<u64, String>
+fn load_file_name_hash_mappings<T>(reader: &mut T) -> std::collections::HashMap<u64, (String, String)>
 where
     T: std::io::BufRead,
 {
@@ -497,9 +497,10 @@ where
             .unwrap();
             let caps = r.captures(&line);
             if let Some(caps) = caps {
+                let ftype = caps.get(1).unwrap().as_str();
                 let name_hash = caps.get(2).unwrap().as_str().parse::<u64>().unwrap();
                 let filename = caps.get(6).unwrap().as_str();
-                file_mappings.insert(name_hash, filename.to_string());
+                file_mappings.insert(name_hash, (ftype.to_string(), filename.to_string()));
             } else {
                 use murmur3::murmur3_32;
                 use std::io::Cursor;
@@ -514,7 +515,7 @@ where
                 )
                 .unwrap();
                 let hash = (bottom as i64 | (top as i64) << 0x20) as i64;
-                file_mappings.insert(hash as u64, line.to_string());
+                file_mappings.insert(hash as u64, ("".to_string(), line.to_string()));
             }
         }
     }
@@ -555,6 +556,14 @@ fn main() -> Result<(), Npk2Error> {
             .value_name(
                 "FILELIST"
             ).about("Supplies a file list to the npk unpack which will be used to try and reconstruct the original file tree\nWhen INPUT is supplied with a list of all resX.npk files this may be determined and used automatically.")
+        )
+        .arg(
+            Arg::new("PATCHDIR")
+            .short('p')
+            .long("PATCHDIR")
+            .value_name(
+                "PATCHDIR"
+            ).about("The patch directory which should be used to overlay files on top of the NPK files, this is usually the Documents directory which contains a 0 and 1 directory.")
         ))
         .get_matches();
 
@@ -568,6 +577,12 @@ fn main() -> Result<(), Npk2Error> {
                 npk_file.open()?;
                 npk_readers.push(npk_file);
             }
+
+            let patch_dir = sub_m.value_of("PATCHDIR");
+
+            const PATCH_DIR: &str = "0";
+            const PATCH_SCRIPT_DIR: &str = "0";
+            const PATCH_ASSET_DIR: &str = "1";
 
             let file_list = match sub_m.value_of("FILELIST") {
                 Some(path) => {
@@ -604,6 +619,36 @@ fn main() -> Result<(), Npk2Error> {
                 }
             };
 
+            let patch_file_list = match patch_dir {
+                Some(patch_dir) => {
+                    let patch_dir = std::path::Path::new(patch_dir);
+                    let patch_dir = patch_dir.join(PATCH_DIR).join(PATCH_ASSET_DIR);
+                    let filelist = patch_dir.join("2081783950193513057");
+                    if filelist.exists() {
+                        match std::fs::File::open(&filelist) {
+                            Ok(mut file) => {
+                                let metadata = std::fs::metadata(&filelist).expect("unable to read metadata");
+                                let mut buffer = vec![0; metadata.len() as usize];
+                                file.read(&mut buffer).expect("buffer overflow");
+                                let mut decompressed = Vec::new();
+                                match compress::zlib::Decoder::new(std::io::Cursor::new(&buffer))
+                                    .read_to_end(&mut decompressed)
+                                {
+                                    Ok(_) => load_file_name_hash_mappings(&mut std::io::Cursor::new(
+                                        &decompressed,
+                                    )),
+                                    Err(_) => std::collections::HashMap::new(),
+                                }
+                            }
+                            Err(_) => std::collections::HashMap::new(),
+                        }
+                    } else {
+                        std::collections::HashMap::new()
+                    }
+                }
+                None => std::collections::HashMap::new(),
+            };
+
             let output_directory = std::path::Path::new(sub_m.value_of("DIR").unwrap());
             std::fs::create_dir_all(&output_directory)?;
 
@@ -611,7 +656,7 @@ fn main() -> Result<(), Npk2Error> {
             let pb = ProgressBar::new(
                 npk_readers
                     .iter()
-                    .fold(0 as usize, |x, y| x + y.indices().len()) as u64,
+                    .fold(0 as usize, |x, y| x + y.indices().len()) as u64 + patch_file_list.len() as u64,
             );
             pb.set_style(ProgressStyle::default_bar().template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] ({pos}/{len}, {msg}, ETA {eta})",
@@ -623,7 +668,7 @@ fn main() -> Result<(), Npk2Error> {
 
                     let content = npk_file.read_content_for_index(index)?;
                     let file_name = match file_list.get(&index.name_hash()) {
-                        Some(file_name) => file_name.clone(),
+                        Some((_, file_name)) => file_name.clone(),
                         None => {
                             // This is a massive hack, but oh well
                             // We know the hash, and we know what the file is
@@ -698,6 +743,36 @@ fn main() -> Result<(), Npk2Error> {
                         out_file.as_path().to_str().unwrap()
                     );
                     std::fs::write(out_file, &content)?;
+                }
+            }
+            if let Some(patch_dir) = patch_dir {
+                let patch_dir = std::path::Path::new(patch_dir);
+                let asset_patch_dir = patch_dir.join(PATCH_DIR).join(PATCH_ASSET_DIR);
+                let script_patch_dir = patch_dir.join(PATCH_DIR).join(PATCH_SCRIPT_DIR);
+
+                for (hash, (ftype, file_name)) in patch_file_list.iter() {
+                    //
+                    // pb.set_message(&format!("{}", file_name));
+                    // pb.inc(1);
+
+                    let out_file = output_directory.join(file_name);
+                    if let Some(dir_path) = std::path::Path::new(&out_file).parent() {
+                        std::fs::create_dir_all(dir_path)?;
+                    }
+                    let src_file = match ftype.as_str() {
+                        "res" => {
+                            asset_patch_dir.clone()
+                        },
+                        "script" => {
+                            script_patch_dir.clone()
+                        },
+                        _=> panic!("Unknown file type"),
+                    }.join(hash.to_string());
+
+                    if src_file.exists() {
+                        info!("Patch file {} {} {:?}", hash, file_name, out_file);
+                        std::fs::copy(src_file, out_file)?;
+                    }
                 }
             }
         }

@@ -1,3 +1,6 @@
 [submodule "tools/python-uncompyle6"]
 	path = scripts/python-uncompyle6
     url = https://github.com/xforce/python-uncompyle6.git
+[submodule "scripts/python-xdis"]
+	path = scripts/python-xdis
+	url = https://github.com/rocky/python-xdis.git
