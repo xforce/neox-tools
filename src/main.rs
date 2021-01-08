@@ -1,6 +1,6 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use clap::{App, Arg};
-use log::{debug, info, trace, warn};
+use log::{debug, info, trace};
 use std::io::{BufRead, BufReader, Read, Seek};
 
 fn is_eof<T>(reader: &mut std::io::BufReader<T>) -> std::io::Result<bool>
@@ -47,14 +47,14 @@ impl From<std::io::Error> for NeoXIndexError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum NeoXIndex2CompressType {
     None,
     LZ4,
     ZLib,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum NeoXIndex2EncryptType {
     None,
     RC4,
@@ -105,56 +105,107 @@ impl NeoXIndex1 {
             large_file_offset,
         })
     }
-    pub fn read_content_from_buffer<T>(
-        &self,
-        reader: &mut std::io::BufReader<T>,
-    ) -> Result<Vec<u8>, NeoXIndexError>
-    where
-        T: std::io::Read,
-        T: std::io::Seek,
-    {
-        reader.seek(std::io::SeekFrom::Start(
-            self.offset as u64 | (self.large_file_offset as u64) << 20,
-        ))?;
+}
 
-        let mut buffer = vec![0; self.compressed_size as usize];
-        trace!("Read NeoX source buffer");
-        reader.read_exact(&mut buffer)?;
+#[derive(Debug)]
+struct NeoXIndex1_2 {
+    name_hash: u64,
+    offset: u32,
+    compressed_size: u32,
+    uncompressed_size: u32,
+    compression_type: NeoXIndex2CompressType,
+    encrypt_type: NeoXIndex2EncryptType,
+    large_file_offset: u8,
+}
 
-        trace!("Handle Encryption of type {:?}", self.encrypt_type);
-        let unencrypted_buffer = match self.encrypt_type {
-            NeoXIndex2EncryptType::None => buffer,
-            NeoXIndex2EncryptType::RC4 => unimplemented!("RC4 is currently not supported"),
-            NeoXIndex2EncryptType::Simple => {
-                unimplemented!("Simple encrypt is currenlty not support")
-            }
-        };
 
-        trace!("Handle Compression of type {:?}", self.compression_type);
-        let uncompressed_buffer = match self.compression_type {
-            NeoXIndex2CompressType::None => unencrypted_buffer,
-            NeoXIndex2CompressType::LZ4 => {
-                let mut decompressed = Vec::new();
-                let len = compress::lz4::decode_block(&unencrypted_buffer, &mut decompressed);
-                if len < 1 {
-                    return Err(NeoXIndexError::DecompressFailedLZ4);
-                }
-                decompressed
-            }
-            NeoXIndex2CompressType::ZLib => {
-                let mut decompressed = Vec::new();
-                let res = compress::zlib::Decoder::new(std::io::Cursor::new(&unencrypted_buffer))
-                    .read_to_end(&mut decompressed);
-                if res.is_err() {
-                    return Err(NeoXIndexError::DecompressFailedZLib);
-                }
-                decompressed
-            }
-        };
+impl NeoXIndex1_2 {
+    pub fn from_slice(slice: &mut [u8]) -> Result<Self, NeoXIndexError> {
+        let mut slice = slice.as_ref();
+        let name_hash = slice.read_u64::<LittleEndian>()?;          // +0
+        let offset = slice.read_u32::<LittleEndian>()?;             // +4
+        let compressed_size = slice.read_u32::<LittleEndian>()?;    // +C
+        let uncompressed_size = slice.read_u32::<LittleEndian>()?;  // +10
+        let _field_14 = slice.read_u64::<LittleEndian>()?;          // +14
 
-        Ok(uncompressed_buffer)
+        let compress_type = slice.read_u16::<LittleEndian>()?;      // +1C
+        let encrypt_type = slice.read_u8()?;                        // +1E
+        let large_file_offset = slice.read_u8()?;                   // +1F
+
+        Ok(NeoXIndex1_2 {
+            name_hash,
+            offset,
+            compressed_size,
+            uncompressed_size,
+            compression_type: match compress_type {
+                0 => NeoXIndex2CompressType::None,
+                1 => NeoXIndex2CompressType::ZLib,
+                2 => NeoXIndex2CompressType::LZ4,
+                _ => return Err(NeoXIndexError::UnkownCompressType),
+            },
+            encrypt_type: match encrypt_type {
+                0 => NeoXIndex2EncryptType::None,
+                1 => NeoXIndex2EncryptType::Simple,
+                2 => NeoXIndex2EncryptType::RC4,
+                _ => return Err(NeoXIndexError::UnknownEncryptType),
+            },
+            large_file_offset,
+        })
     }
 }
+
+#[derive(Debug)]
+struct NeoXIndex1_32 {
+    name_hash: u64,
+    offset: u32,
+    compressed_size: u32,
+    uncompressed_size: u32,
+    compression_type: NeoXIndex2CompressType,
+    encrypt_type: NeoXIndex2EncryptType,
+    large_file_offset: u8,
+}
+
+
+impl NeoXIndex1_32 {
+    pub fn from_slice(slice: &mut [u8]) -> Result<Self, NeoXIndexError> {
+        let mut slice = slice.as_ref();
+        let name_hash = slice.read_u32::<LittleEndian>()?;          // +0
+        let mut offset = slice.read_u32::<LittleEndian>()?;             // +4
+        let compressed_size = slice.read_u32::<LittleEndian>()?;    // +8
+        let uncompressed_size = slice.read_u32::<LittleEndian>()?;  // +C
+        let _field_10 = slice.read_u32::<LittleEndian>()?;          // +10
+        let _field_14 = slice.read_u32::<LittleEndian>()?;          // +14
+
+        let mut compress_type = slice.read_u32::<LittleEndian>()?;      // +18
+        let encrypt_type = 0;
+
+        if compress_type >= 62 {
+          offset ^= (uncompressed_size + 99) ^ 0x85F6F276;
+          compress_type = compress_type - 62;
+        }
+
+        Ok(Self {
+            name_hash: name_hash as u64,
+            offset: offset as u32,
+            compressed_size,
+            uncompressed_size,
+            compression_type: match compress_type {
+                0 => NeoXIndex2CompressType::None,
+                1 => NeoXIndex2CompressType::ZLib,
+                2 => NeoXIndex2CompressType::LZ4,
+                _ => return Err(NeoXIndexError::UnkownCompressType),
+            },
+            encrypt_type: match encrypt_type {
+                0 => NeoXIndex2EncryptType::None,
+                1 => NeoXIndex2EncryptType::Simple,
+                2 => NeoXIndex2EncryptType::RC4,
+                _ => return Err(NeoXIndexError::UnknownEncryptType),
+            },
+            large_file_offset: 0,
+        })
+    }
+}
+
 
 #[derive(Debug)]
 struct NeoXIndex2 {
@@ -167,34 +218,6 @@ struct NeoXIndex2 {
     large_file_offset: u8,
 }
 
-enum NeoXIndex {
-    Version1(NeoXIndex1),
-    Version2(NeoXIndex2),
-}
-
-impl NeoXIndex {
-    pub fn name_hash(&self) -> u64 {
-        match self {
-            Self::Version1(index) => index.name_hash,
-            Self::Version2(index) => index.name_hash(),
-        }
-    }
-
-    pub fn read_content_from_buffer<T>(
-        &self,
-        reader: &mut std::io::BufReader<T>,
-    ) -> Result<Vec<u8>, NeoXIndexError>
-    where
-        T: std::io::Read,
-        T: std::io::Seek,
-    {
-        match self {
-            Self::Version1(index) => index.read_content_from_buffer(reader),
-            Self::Version2(index) => index.read_content_from_buffer(reader),
-        }
-    }
-}
-
 impl NeoXIndex2 {
     pub fn name_hash(&self) -> u64 {
         self.name_hash
@@ -205,7 +228,7 @@ impl NeoXIndex2 {
         let name_hash = slice.read_u64::<LittleEndian>()?;
         let offset = slice.read_u32::<LittleEndian>()?;
         let compressed_size = slice.read_u32::<LittleEndian>()?;
-        let uncompressed_size = slice.read_u32::<LittleEndian>()?;
+        let uncompressed_size = slice.read_u32::<LittleEndian>()?; 
 
         let _field_14 = slice.read_u32::<LittleEndian>()?;
         let _field_18 = slice.read_u64::<LittleEndian>()?;
@@ -238,8 +261,61 @@ impl NeoXIndex2 {
             large_file_offset,
         })
     }
+}
 
-    // TODO(alexander): Try to merge this with t NeoXIndex1
+enum NeoXIndex {
+    Version1(NeoXIndex1),
+    Version1_2(NeoXIndex1_2),
+    Version1_32(NeoXIndex1_32),
+    Version2(NeoXIndex2),
+}
+
+impl NeoXIndex {
+    pub fn name_hash(&self) -> u64 {
+        match self {
+            Self::Version1(index) => index.name_hash,
+            Self::Version1_2(index) => index.name_hash,
+            Self::Version1_32(index) => index.name_hash,
+            Self::Version2(index) => index.name_hash(),
+        }
+    }
+
+    pub fn encrypt_type(&self) -> NeoXIndex2EncryptType {
+        match self {
+            Self::Version1(index) => index.encrypt_type,
+            Self::Version1_2(index) => index.encrypt_type,
+            Self::Version1_32(index) => index.encrypt_type,
+            Self::Version2(index) => index.encrypt_type,
+        }
+    }
+
+    pub fn compress_type(&self) -> NeoXIndex2CompressType {
+        match self {
+            Self::Version1(index) => index.compression_type,
+            Self::Version1_2(index) => index.compression_type,
+            Self::Version1_32(index) => index.compression_type,
+            Self::Version2(index) => index.compression_type,
+        }
+    }
+
+    pub fn offset(&self) -> u64 {
+        match self {
+            Self::Version1(index) =>    index.offset as u64 | (index.large_file_offset as u64) << 20,
+            Self::Version1_2(index) =>  index.offset as u64 | (index.large_file_offset as u64) << 20,
+            Self::Version1_32(index) =>  index.offset as u64 | (index.large_file_offset as u64) << 20,
+            Self::Version2(index) =>    index.offset as u64 | (index.large_file_offset as u64) << 20,
+        }
+    }
+
+    pub fn compressed_size(&self) -> u64 {
+        (match self {
+            Self::Version1(index) => index.compressed_size,
+            Self::Version1_2(index) => index.compressed_size,
+            Self::Version1_32(index) => index.compressed_size,
+            Self::Version2(index) => index.compressed_size,
+        }) as u64
+    }
+
     pub fn read_content_from_buffer<T>(
         &self,
         reader: &mut std::io::BufReader<T>,
@@ -248,16 +324,17 @@ impl NeoXIndex2 {
         T: std::io::Read,
         T: std::io::Seek,
     {
-        reader.seek(std::io::SeekFrom::Start(
-            self.offset as u64 | (self.large_file_offset as u64) << 20,
-        ))?;
+        let offset = self.offset();
+        let compress_type = self.compress_type();
+        let encrypt_type = self.encrypt_type();
 
-        let mut buffer = vec![0; self.compressed_size as usize];
+        reader.seek(std::io::SeekFrom::Start(offset))?;
+
+        let mut buffer = vec![0; self.compressed_size() as usize];
         trace!("Read NeoX source buffer");
-        reader.read_exact(&mut buffer)?;
+        reader.read_exact(&mut buffer).unwrap();
 
-        trace!("Handle Encryption of type {:?}", self.encrypt_type);
-        let unencrypted_buffer = match self.encrypt_type {
+        let unencrypted_buffer = match encrypt_type {
             NeoXIndex2EncryptType::None => buffer,
             NeoXIndex2EncryptType::RC4 => unimplemented!("RC4 is currently not supported"),
             NeoXIndex2EncryptType::Simple => {
@@ -265,8 +342,7 @@ impl NeoXIndex2 {
             }
         };
 
-        trace!("Handle Compression of type {:?}", self.compression_type);
-        let uncompressed_buffer = match self.compression_type {
+        let uncompressed_buffer = match compress_type {
             NeoXIndex2CompressType::None => unencrypted_buffer,
             NeoXIndex2CompressType::LZ4 => {
                 let mut decompressed = Vec::new();
@@ -316,8 +392,11 @@ impl From<NeoXIndexError> for Npk2Error {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NpkVersion {
     Version1,
+    Version1_2,
+    Version1_32,
     Version2,
 }
 
@@ -326,8 +405,6 @@ struct NpkHeader {
     file_count: u32,
     large_file_index_offset: u32,
     index_offset: u32,
-    index_size: u32,
-    field_28: u32,
 }
 
 impl NpkHeader {
@@ -338,6 +415,8 @@ impl NpkHeader {
     pub fn size_of_index_entry(&self) -> u64 {
         match self.version {
             NpkVersion::Version1 => 0x1C,
+            NpkVersion::Version1_32 => 0x1C,
+            NpkVersion::Version1_2 => 0x20,
             NpkVersion::Version2 => 0x28,
         }
     }
@@ -363,49 +442,37 @@ impl NpkReader {
         //
         let file_size = reader.seek(std::io::SeekFrom::End(0))?;
         reader.seek(std::io::SeekFrom::Start(0))?;
-        let magic = reader.read_u32::<LittleEndian>()?;
+        let magic = reader.read_u32::<LittleEndian>()?; // +0
         if magic != 0x4B50584E {
             return Err(Npk2Error::InvalidHeader);
         }
 
-        let mut file_count = reader.read_u32::<LittleEndian>()?;
+        let file_count = reader.read_u32::<LittleEndian>()?; // +4
 
         let large_file_index_offset = reader.read_u32::<LittleEndian>()?;
-        let _var2 = reader.read_u32::<LittleEndian>()?; // IGNORED
-        let _var3 = reader.read_u32::<LittleEndian>()?; // IGNORED
-        let index_offset = reader.read_u32::<LittleEndian>()?;
-
-        let index_size = reader.read_u32::<LittleEndian>()?;
-        let mut field_28 = reader.read_u32::<LittleEndian>()?; // DATA END MAYBE?
+        // let _var1 = reader.read_u32::<LittleEndian>()?; // IGNORED, hash variant? // +8
+        let _var2 = reader.read_u32::<LittleEndian>()?; // IGNORED // +12
+        let _var3 = reader.read_u32::<LittleEndian>()?; // IGNORED // +16
+        let index_offset = reader.read_u32::<LittleEndian>()?; // +20
 
         // NOTE(alexander): This is a very very crude way of detecting the format of this
         // TODO(alexander): Try to find a better way to detect what version
         // of NPK this is
-        let version = if (index_offset as u64 | ((large_file_index_offset as u64) << 0x20))
-            + file_count as u64 * 0x28
-            <= file_size
-        {
-            NpkVersion::Version2
-        } else {
-            NpkVersion::Version1
-        };
-
-        // TODO(alexander): Figure out what this actually does and why we need it
-        // in Eve Echoes NPKs we usually run into the first case, where we change field 28
-        let v5 = ((field_28 as i64 - index_size as i64) >> 3) as u64 / 5; // No idea why divide by 5, but it is a thing :)
-        if v5 >= file_count as u64 {
-            if v5 > file_count as u64 {
-                warn!("Handle unknown special case! Changing field 28");
-                field_28 = index_size
-                    + match version {
-                        NpkVersion::Version1 => 0x1C,
-                        NpkVersion::Version2 => 0x28,
-                    } * file_count;
+        let full_index_offset = index_offset as u64 | ((large_file_index_offset as u64) << 0x20);
+        let version = {
+            if full_index_offset + file_count as u64 * 0x28 <= file_size {
+                NpkVersion::Version2
+            } else if full_index_offset + file_count as u64 * 0x20 <= file_size {
+                NpkVersion::Version1_2
+            } else if full_index_offset + file_count as u64 * 0x1C <= file_size && _var3 == 0 {
+                NpkVersion::Version1
+            } else if full_index_offset + file_count as u64 * 0x1C <= file_size && _var3 == 2 {
+                NpkVersion::Version1_32
+            } else {
+                unimplemented!("Unsupported NPK Version");
             }
-        } else {
-            warn!("Unknown limit thing");
-            file_count = file_count - v5 as u32;
-        }
+        };
+        info!("Detected NPK Version: {:?}", version);
 
         //
         //
@@ -414,8 +481,6 @@ impl NpkReader {
             file_count,
             large_file_index_offset,
             index_offset,
-            index_size,
-            field_28,
         })
     }
 
@@ -441,7 +506,7 @@ impl NpkReader {
         let mut buffer = vec![0; self.header.index_buffer_size()];
         reader.read_exact(&mut buffer)?;
 
-        if !is_eof(&mut reader)? && self.header.index_size != self.header.field_28 {
+        if !is_eof(&mut reader)? {
             unimplemented!("Handle this type of NPK file, embedded file names :)");
         // debug!(
         //     "Reading more stuff...no idea what :) {} != {}",
@@ -459,7 +524,15 @@ impl NpkReader {
                     NpkVersion::Version1 => {
                         let index = NeoXIndex1::from_slice(sub_buffer.as_mut_slice())?;
                         NeoXIndex::Version1(index)
-                    }
+                    },
+                    NpkVersion::Version1_2 => {
+                        let index = NeoXIndex1_2::from_slice(sub_buffer.as_mut_slice())?;
+                        NeoXIndex::Version1_2(index)
+                    },
+                    NpkVersion::Version1_32 => {
+                        let index = NeoXIndex1_32::from_slice(sub_buffer.as_mut_slice())?;
+                        NeoXIndex::Version1_32(index)
+                    },
                     NpkVersion::Version2 => {
                         let index = NeoXIndex2::from_slice(sub_buffer.as_mut_slice())?;
                         NeoXIndex::Version2(index)
@@ -481,7 +554,7 @@ impl NpkReader {
     }
 }
 
-fn load_file_name_hash_mappings<T>(reader: &mut T) -> std::collections::HashMap<u64, String>
+fn load_file_name_hash_mappings<T>(reader: &mut T, version: NpkVersion) -> std::collections::HashMap<u64, String>
 where
     T: std::io::BufRead,
 {
@@ -503,18 +576,28 @@ where
             } else {
                 use murmur3::murmur3_32;
                 use std::io::Cursor;
-                let top = murmur3_32(
-                    &mut Cursor::new(line.clone().replace("/", "\\")),
-                    0x9747B28C,
-                )
-                .unwrap();
-                let bottom = murmur3_32(
-                    &mut Cursor::new(line.clone().replace("/", "\\")),
-                    0xC82B7479,
-                )
-                .unwrap();
-                let hash = (bottom as i64 | (top as i64) << 0x20) as i64;
-                file_mappings.insert(hash as u64, line.to_string());
+
+                if version == NpkVersion::Version1 || version == NpkVersion::Version1_32 {
+                    let hash = murmur3_32(
+                        &mut Cursor::new(line.clone().replace("/", "\\")),
+                        0x9747B28C,
+                    )
+                    .unwrap();
+                    file_mappings.insert(hash as u64, line.to_string());
+                } else {
+                    let top = murmur3_32(
+                        &mut Cursor::new(line.clone().replace("/", "\\")),
+                        0x9747B28C,
+                    )
+                    .unwrap();
+                    let bottom = murmur3_32(
+                        &mut Cursor::new(line.clone().replace("/", "\\")),
+                        0xC82B7479,
+                    )
+                    .unwrap();
+                    let hash = (bottom as i64 | (top as i64) << 0x20) as i64;
+                    file_mappings.insert(hash as u64, line.to_string());
+                }
             }
         }
     }
@@ -572,7 +655,7 @@ fn main() -> Result<(), Npk2Error> {
             let file_list = match sub_m.value_of("FILELIST") {
                 Some(path) => {
                     let file = std::fs::File::open(path)?;
-                    load_file_name_hash_mappings(&mut BufReader::new(file))
+                    load_file_name_hash_mappings(&mut BufReader::new(file), NpkVersion::Version1)
                 }
                 None => {
                     match npk_readers
@@ -584,6 +667,7 @@ fn main() -> Result<(), Npk2Error> {
                         .find(|(_, x)| {
                             x.name_hash() == 0xD4A17339F75381FD
                                 || x.name_hash() == 0xE581738CE3FD567E
+                                || x.name_hash() == 0x4176DE2A
                         }) {
                         Some((npk_file, index)) => {
                             let content = npk_file.read_content_for_index(index)?;
@@ -593,10 +677,11 @@ fn main() -> Result<(), Npk2Error> {
                             {
                                 Ok(_) => load_file_name_hash_mappings(&mut std::io::Cursor::new(
                                     &decompressed,
-                                )),
+                                ), 
+                                npk_file.header.version),
                                 Err(_) => load_file_name_hash_mappings(&mut std::io::Cursor::new(
                                     &content,
-                                )),
+                                ), npk_file.header.version),
                             }
                         }
                         None => std::collections::HashMap::new(),
@@ -619,19 +704,29 @@ fn main() -> Result<(), Npk2Error> {
             pb.enable_steady_tick(100);
             for npk_file in npk_readers {
                 for index in npk_file.indices() {
-                    // debug!("Reading Index {:?}", index);
-
                     let content = npk_file.read_content_for_index(index)?;
+                    let mut decompressed = Vec::new();
+                    match compress::zlib::Decoder::new(std::io::Cursor::new(&content))
+                        .read_to_end(&mut decompressed)
+                    {
+                        Ok(_) => {
+                            println!("Possible file hash {}", index.name_hash());
+                            println!("Possible file hash {}", index.name_hash());
+                            println!("Possible file hash {}", index.name_hash());
+                        }
+                        Err(_) => {},
+                    }
                     let file_name = match file_list.get(&index.name_hash()) {
                         Some(file_name) => file_name.clone(),
                         None => {
                             // This is a massive hack, but oh well
                             // We know the hash, and we know what the file is
-                            // zlib compressed data
+                            // possibly zlib compressed data
                             // Or in-case of some other npk files there is a different
                             // plain text file with a list of files
                             if index.name_hash() == 0xD4A17339F75381FD
                                 || index.name_hash() == 0xE581738CE3FD567E
+                                || index.name_hash() == 0x4176DE2A
                             {
                                 "filelist.txt".to_string()
                             } else {
@@ -649,7 +744,11 @@ fn main() -> Result<(), Npk2Error> {
                                                 } else if magic & 0xFFFF == 0x041D {
                                                     "nxs"
                                                 } else {
-                                                    "dat"
+                                                    if magic == 0x58544BAB {
+                                                        "ktx"
+                                                    } else {
+                                                        "dat"
+                                                    }
                                                 }
                                             }
                                             Err(_) => "dat",
@@ -674,6 +773,7 @@ fn main() -> Result<(), Npk2Error> {
                                     "audio/mpeg" => "mp3",
                                     "audio/x-wav" => "wav",
                                     "application/x-java-jce-keystore" => ".pem",
+                                    "application/x-font-ttf" => ".ttf",
                                     _ => {
                                         pb.println(format!("Unhandled mime type {}", result));
                                         // error!("Unhandled mime type {}", result);
