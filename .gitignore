@@ -3,3 +3,4 @@ out/
 *.pyc
 
 /scripts/script_redirect_plug.py
+/target
