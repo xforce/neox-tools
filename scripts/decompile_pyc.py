@@ -5,8 +5,15 @@ import sys
 import os
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
-sys.path.insert(0, os.path.join(dir_path, "python-uncompyle6"))
+try:
+    import uncompyle6
+except ImportError as e:
+    sys.path.insert(0, os.path.join(dir_path, "python-uncompyle6"))
 
 from uncompyle6.bin.uncompile import main_bin
 
-main_bin("utf-8")
+try:
+    main_bin("utf-8")
+except TypeError:
+    # New version doesn't have the
+    main_bin()
